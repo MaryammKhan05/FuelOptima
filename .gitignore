@@ -1,0 +1,22 @@
+# API keys - NEVER commit to GitHub
+docs/api_keys.txt
+
+# Environment files
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
