@@ -54,7 +54,9 @@ class _MapScreenState extends State<MapScreen> {
   final TextEditingController _sourceController = TextEditingController();
   final TextEditingController _destinationController = TextEditingController();
 
-  static const String _apiKey = 'AIzaSyAtQh7O69y9h3HNzofg4GpnxQuFU1Jkq5c';
+  // -------- Point this at your FastAPI backend --------
+  // When you deploy the backend later, change this to your real URL.
+  static const String _backendBase = 'http://127.0.0.1:8000';
 
   @override
   void dispose() {
@@ -70,7 +72,7 @@ class _MapScreenState extends State<MapScreen> {
       backgroundColor: Colors.transparent,
       builder: (context) {
         return _SearchSheet(
-          apiKey: _apiKey,
+          backendBase: _backendBase,
           sourceController: _sourceController,
           destinationController: _destinationController,
           onRoutesReady: (source, dest, sourceName, destName) {
@@ -98,7 +100,6 @@ class _MapScreenState extends State<MapScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // Map
           FlutterMap(
             mapController: _mapController,
             options: const MapOptions(
@@ -157,8 +158,6 @@ class _MapScreenState extends State<MapScreen> {
                 ),
             ],
           ),
-
-          // Google-style search bar at top
           Positioned(
             top: MediaQuery.of(context).padding.top + 12,
             left: 12,
@@ -171,7 +170,8 @@ class _MapScreenState extends State<MapScreen> {
                 borderRadius: BorderRadius.circular(28),
                 onTap: _openSearchSheet,
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                   child: Row(
                     children: [
                       const Icon(Icons.search, color: GColors.grey, size: 22),
@@ -182,7 +182,8 @@ class _MapScreenState extends State<MapScreen> {
                               ? 'Where do you want to go?'
                               : '$_sourceName → $_destinationName',
                           style: TextStyle(
-                            color: _sourceName.isEmpty ? GColors.grey : Colors.black,
+                            color:
+                                _sourceName.isEmpty ? GColors.grey : Colors.black,
                             fontSize: 16,
                             fontWeight: _sourceName.isEmpty
                                 ? FontWeight.w400
@@ -212,13 +213,14 @@ class _MapScreenState extends State<MapScreen> {
 
 // ==================== SEARCH BOTTOM SHEET ====================
 class _SearchSheet extends StatefulWidget {
-  final String apiKey;
+  final String backendBase;
   final TextEditingController sourceController;
   final TextEditingController destinationController;
-  final Function(LatLng source, LatLng dest, String sourceName, String destName) onRoutesReady;
+  final Function(LatLng source, LatLng dest, String sourceName, String destName)
+      onRoutesReady;
 
   const _SearchSheet({
-    required this.apiKey,
+    required this.backendBase,
     required this.sourceController,
     required this.destinationController,
     required this.onRoutesReady,
@@ -260,7 +262,7 @@ class _SearchSheetState extends State<_SearchSheet> {
   }
 
   Future<void> _fetchSuggestions(String query, {required bool isSource}) async {
-    // Try coordinate parse first
+    // 1. Try coordinate parse first (e.g. "24.86, 67.00")
     final coords = _tryParseCoordinates(query);
     if (coords != null) {
       if (isSource) {
@@ -274,6 +276,7 @@ class _SearchSheetState extends State<_SearchSheet> {
       return;
     }
 
+    // 2. Don't hit the API for very short inputs
     if (query.trim().length < 3) {
       if (isSource) {
         _sourceSuggestions = [];
@@ -290,22 +293,36 @@ class _SearchSheetState extends State<_SearchSheet> {
       setState(() => _loadingDest = true);
     }
 
-    // Google Places Autocomplete API
-    final url = Uri.parse(
-      'https://maps.googleapis.com/maps/api/place/autocomplete/json'
-      '?input=$query&key=${widget.apiKey}',
-    );
+    // 3. Call OUR backend (which proxies Google)
+    final url = Uri.parse('${widget.backendBase}/places/autocomplete');
 
     try {
-      final response = await http.get(url);
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'input': query}),
+      );
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        final predictions = (data['predictions'] as List?) ?? [];
+        final predictions =
+            (data['suggestions'] as List?) ?? const <dynamic>[];
+
+        // New Places API response shape:
+        // { suggestions: [ { placePrediction: { placeId, text, structuredFormat } } ] }
         final results = predictions
-            .map((p) => {
-                  'description': p['description'],
-                  'place_id': p['place_id'],
-                })
+            .map((p) {
+              final pred = p['placePrediction'] as Map<String, dynamic>?;
+              if (pred == null) return null;
+              final text = pred['text']?['text'] as String? ?? '';
+              final placeId = pred['placeId'] as String? ?? '';
+              if (placeId.isEmpty || text.isEmpty) return null;
+              return <String, dynamic>{
+                'description': text,
+                'place_id': placeId,
+              };
+            })
+            .whereType<Map<String, dynamic>>()
             .toList();
 
         if (isSource) {
@@ -318,6 +335,13 @@ class _SearchSheetState extends State<_SearchSheet> {
             _destinationSuggestions = results;
             _loadingDest = false;
           });
+        }
+      } else {
+        debugPrint('Autocomplete failed: ${response.statusCode} ${response.body}');
+        if (isSource) {
+          setState(() => _loadingSource = false);
+        } else {
+          setState(() => _loadingDest = false);
         }
       }
     } catch (e) {
@@ -343,17 +367,27 @@ class _SearchSheetState extends State<_SearchSheet> {
   }
 
   Future<LatLng?> _getPlaceDetails(String placeId) async {
-    final url = Uri.parse(
-      'https://maps.googleapis.com/maps/api/place/details/json'
-      '?place_id=$placeId&key=${widget.apiKey}',
-    );
+    final url = Uri.parse('${widget.backendBase}/places/details');
 
     try {
-      final response = await http.get(url);
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'place_id': placeId}),
+      );
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        final location = data['result']['geometry']['location'];
-        return LatLng(location['lat'], location['lng']);
+        // New Places API returns { location: { latitude, longitude } }
+        final loc = data['location'];
+        if (loc != null && loc['latitude'] != null && loc['longitude'] != null) {
+          return LatLng(
+            (loc['latitude'] as num).toDouble(),
+            (loc['longitude'] as num).toDouble(),
+          );
+        }
+      } else {
+        debugPrint('Details failed: ${response.statusCode} ${response.body}');
       }
     } catch (e) {
       debugPrint('Place details error: $e');
@@ -361,7 +395,8 @@ class _SearchSheetState extends State<_SearchSheet> {
     return null;
   }
 
-  void _onSuggestionTapped(Map<String, dynamic> suggestion, {required bool isSource}) async {
+  void _onSuggestionTapped(Map<String, dynamic> suggestion,
+      {required bool isSource}) async {
     final latLng = await _getPlaceDetails(suggestion['place_id']);
     if (latLng == null) return;
 
@@ -377,9 +412,8 @@ class _SearchSheetState extends State<_SearchSheet> {
   }
 
   Future<void> _handleGetRoutes() async {
-    // Ensure both are set
+    // Ensure both endpoints are resolved
     if (_sourceLatLng == null) {
-      // Try direct search
       final s = await _searchText(widget.sourceController.text);
       if (s == null) {
         _showError('Source not found');
@@ -409,18 +443,27 @@ class _SearchSheetState extends State<_SearchSheet> {
 
   Future<LatLng?> _searchText(String query) async {
     if (query.trim().isEmpty) return null;
-    final url = Uri.parse(
-      'https://maps.googleapis.com/maps/api/place/textsearch/json'
-      '?query=$query&key=${widget.apiKey}',
-    );
+    final url = Uri.parse('${widget.backendBase}/places/textsearch');
 
     try {
-      final response = await http.get(url);
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'text_query': query}),
+      );
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        if (data['results'] != null && data['results'].isNotEmpty) {
-          final location = data['results'][0]['geometry']['location'];
-          return LatLng(location['lat'], location['lng']);
+        // New Places API: { places: [ { location: { latitude, longitude }, ... } ] }
+        final places = data['places'] as List?;
+        if (places != null && places.isNotEmpty) {
+          final loc = places[0]['location'];
+          if (loc != null) {
+            return LatLng(
+              (loc['latitude'] as num).toDouble(),
+              (loc['longitude'] as num).toDouble(),
+            );
+          }
         }
       }
     } catch (e) {
@@ -446,7 +489,6 @@ class _SearchSheetState extends State<_SearchSheet> {
       ),
       child: Column(
         children: [
-          // Drag handle
           Container(
             margin: const EdgeInsets.only(top: 12, bottom: 8),
             width: 40,
@@ -456,8 +498,6 @@ class _SearchSheetState extends State<_SearchSheet> {
               borderRadius: BorderRadius.circular(2),
             ),
           ),
-
-          // Title
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
             child: Row(
@@ -478,13 +518,10 @@ class _SearchSheetState extends State<_SearchSheet> {
               ],
             ),
           ),
-
-          // Route-style input fields
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Row(
               children: [
-                // Route diagram on left
                 Column(
                   children: [
                     const SizedBox(height: 14),
@@ -513,12 +550,9 @@ class _SearchSheetState extends State<_SearchSheet> {
                   ],
                 ),
                 const SizedBox(width: 14),
-
-                // Text fields
                 Expanded(
                   child: Column(
                     children: [
-                      // Source field
                       Container(
                         decoration: BoxDecoration(
                           color: const Color(0xFFF1F3F4),
@@ -535,7 +569,6 @@ class _SearchSheetState extends State<_SearchSheet> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      // Destination field
                       Container(
                         decoration: BoxDecoration(
                           color: const Color(0xFFF1F3F4),
@@ -557,15 +590,10 @@ class _SearchSheetState extends State<_SearchSheet> {
               ],
             ),
           ),
-
           const SizedBox(height: 12),
-
-          // Suggestions area
           Expanded(
             child: _buildSuggestionsArea(),
           ),
-
-          // Get Routes button
           Padding(
             padding: const EdgeInsets.all(20),
             child: SizedBox(
@@ -594,15 +622,12 @@ class _SearchSheetState extends State<_SearchSheet> {
   }
 
   Widget _buildSuggestionsArea() {
-    // Show destination suggestions if destination field is active
     if (_destinationSuggestions.isNotEmpty || _loadingDest) {
       return _buildSuggestionList(_destinationSuggestions, isSource: false);
     }
-    // Otherwise show source suggestions
     if (_sourceSuggestions.isNotEmpty || _loadingSource) {
       return _buildSuggestionList(_sourceSuggestions, isSource: true);
     }
-    // Empty state
     return const Center(
       child: Padding(
         padding: EdgeInsets.all(20),
