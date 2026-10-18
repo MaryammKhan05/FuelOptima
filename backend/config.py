@@ -1,25 +1,14 @@
-"""
-config.py
-Loads environment variables from the .env file.
-Other files import from here to get their settings.
-"""
 import os
 from dotenv import load_dotenv
 
-# Read the .env file into the environment
 load_dotenv()
 
-
 class Settings:
-    """All app settings in one place."""
     GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
 
-    # Sanity check — if the key is missing, fail immediately
-    if not GOOGLE_API_KEY:
-        raise ValueError(
-            "GOOGLE_API_KEY is not set. Did you create a .env file in backend/?"
-        )
+    if not GOOGLE_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
+        raise ValueError("Missing environment variables. Check your .env file.")
 
-
-# A single instance other modules can import
 settings = Settings()
