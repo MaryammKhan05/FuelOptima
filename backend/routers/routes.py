@@ -55,12 +55,12 @@ async def compute_routes(req: RouteRequest):
         "travelMode": "DRIVE",
         "computeAlternativeRoutes": True,
         "routingPreference": "TRAFFIC_AWARE",
-        "fields": "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline",
     }
 
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": settings.GOOGLE_API_KEY,
+        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline",
     }
 
     async with httpx.AsyncClient(timeout=15.0) as client:

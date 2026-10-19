@@ -40,7 +40,7 @@ def _get_last_saved_price(fuel_type: str) -> float:
         if response.data and len(response.data) > 0:
             return float(response.data[0]["price_pkr"])
     except Exception as e:
-        print(f"⚠️ Supabase error: {e}")
+        print(f"[WARN] Supabase error: {e}")
     return 0.0
 
 def _save_price_to_db(fuel_type: str, price: float, source: str):
@@ -51,9 +51,9 @@ def _save_price_to_db(fuel_type: str, price: float, source: str):
             "price_pkr": price,
             "source": source
         }).execute()
-        print(f"✅ Saved {fuel_type} to Supabase: {price}")
+        print(f"[OK] Saved {fuel_type} to Supabase: {price}")
     except Exception as e:
-        print(f"⚠️ Failed to save to Supabase: {e}")
+        print(f"[WARN] Failed to save to Supabase: {e}")
 
 def _scrape_news_prices() -> dict:
     """Scrape Business Recorder. If it fails, use the last database price."""
@@ -77,15 +77,15 @@ def _scrape_news_prices() -> dict:
             petrol = float(petrol_match.group(1))
             diesel = float(diesel_match.group(1))
             
-            print(f"✅ Scraped from News: Petrol={petrol}, Diesel={diesel}")
+            print(f"[OK] Scraped from News: Petrol={petrol}, Diesel={diesel}")
             _save_price_to_db("petrol", petrol, "Business Recorder Scrape")
             _save_price_to_db("diesel", diesel, "Business Recorder Scrape")
             return {"petrol": petrol, "diesel": diesel, "source": "Live Scrape"}
         else:
-            print("⚠️ Scraper didn't find numbers in the text. Falling back to DB.")
+            print("[WARN] Scraper didn't find numbers in the text. Falling back to DB.")
             
     except requests.RequestException as e:
-        print(f"⚠️ Scraper failed: {e}. Fetching from DB...")
+        print(f"[WARN] Scraper failed: {e}. Fetching from DB...")
 
     # If scraping failed, fetch from Supabase
     if petrol is None or diesel is None:
