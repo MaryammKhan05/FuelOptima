@@ -20,6 +20,7 @@ class RouteInfo {
   final double distanceKm;
   final int durationSeconds;
   final String durationText;
+  final String? description;
   final double fuelLiters;
   final double costPkr;
 
@@ -28,6 +29,7 @@ class RouteInfo {
     required this.distanceKm,
     required this.durationSeconds,
     required this.durationText,
+    this.description,
     required this.fuelLiters,
     required this.costPkr,
   });
@@ -176,6 +178,7 @@ class _MapScreenState extends State<MapScreen> {
             distanceKm: r.distanceKm,
             durationSeconds: r.durationSeconds,
             durationText: r.durationText,
+            description: r.description,
             fuelLiters: (costData['final_fuel_l'] as num).toDouble(),
             costPkr: (costData['total_cost_pkr'] as num).toDouble(),
           ));
@@ -209,7 +212,9 @@ class _MapScreenState extends State<MapScreen> {
             ),
             children: [
               TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                urlTemplate:
+                    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+                subdomains: const ['a', 'b', 'c', 'd'],
                 userAgentPackageName: 'com.example.fueloptima',
               ),
               // Route Polylines
@@ -465,47 +470,128 @@ class _MapScreenState extends State<MapScreen> {
 
                       // Alternative Routes Switcher
                       if (_routes.length > 1) ...[
-                        const SizedBox(height: 12),
-                        const Text(
-                          'Alternative Routes:',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: GColors.grey,
-                            fontWeight: FontWeight.w500,
-                          ),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            const Icon(Icons.alt_route, size: 16, color: GColors.blue),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Suggested Routes (${_routes.length}):',
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: Colors.black87,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 6),
-                        Wrap(
-                          spacing: 8,
+                        const SizedBox(height: 8),
+                        Column(
                           children: List.generate(_routes.length, (i) {
+                            final r = _routes[i];
                             final isSel = i == _selectedRouteIndex;
-                            return ChoiceChip(
-                              label: Text(
-                                'Route ${i + 1} (${_routes[i].distanceKm.toStringAsFixed(1)} km)',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: isSel ? Colors.white : Colors.black87,
+                            final routeLabel = r.description != null && r.description!.isNotEmpty
+                                ? 'via ${r.description}'
+                                : (i == 0 ? 'Fastest Route' : 'Route ${i + 1}');
+
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(10),
+                                onTap: () {
+                                  setState(() => _selectedRouteIndex = i);
+                                  final pts = r.points;
+                                  if (pts.isNotEmpty) {
+                                    _mapController.fitCamera(
+                                      CameraFit.bounds(
+                                        bounds: LatLngBounds.fromPoints(pts),
+                                        padding: const EdgeInsets.only(
+                                          top: 100,
+                                          bottom: 240,
+                                          left: 50,
+                                          right: 50,
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: isSel
+                                        ? const Color(0xFFE8F0FE)
+                                        : const Color(0xFFF8F9FA),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                      color: isSel
+                                          ? GColors.blue
+                                          : const Color(0xFFE0E0E0),
+                                      width: isSel ? 1.8 : 1.0,
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        width: 20,
+                                        height: 20,
+                                        decoration: BoxDecoration(
+                                          color: isSel
+                                              ? GColors.blue
+                                              : Colors.grey.shade400,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: Text(
+                                          '${i + 1}',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              routeLabel,
+                                              style: TextStyle(
+                                                fontSize: 13,
+                                                fontWeight: isSel
+                                                    ? FontWeight.bold
+                                                    : FontWeight.w500,
+                                                color: Colors.black87,
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            Text(
+                                              '${r.distanceKm.toStringAsFixed(1)} km  •  ${r.durationText}',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey.shade700,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      Text(
+                                        'Rs. ${r.costPkr.toStringAsFixed(0)}',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.bold,
+                                          color: isSel
+                                              ? GColors.green
+                                              : Colors.grey.shade700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
-                              selected: isSel,
-                              selectedColor: GColors.blue,
-                              onSelected: (_) {
-                                setState(() => _selectedRouteIndex = i);
-                                final pts = _routes[i].points;
-                                if (pts.isNotEmpty) {
-                                  _mapController.fitCamera(
-                                    CameraFit.bounds(
-                                      bounds: LatLngBounds.fromPoints(pts),
-                                      padding: const EdgeInsets.only(
-                                        top: 100,
-                                        bottom: 240,
-                                        left: 50,
-                                        right: 50,
-                                      ),
-                                    ),
-                                  );
-                                }
-                              },
                             );
                           }),
                         ),
@@ -865,6 +951,7 @@ class _SearchSheetState extends State<_SearchSheet> {
           distanceKm: distanceKm,
           durationSeconds: durationSec,
           durationText: durationText,
+          description: r['description'] as String?,
           fuelLiters: fuelLiters,
           costPkr: costPkr,
         ));
