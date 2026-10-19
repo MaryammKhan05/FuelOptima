@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 
 // Google-style colors
 class GColors {
@@ -12,6 +13,24 @@ class GColors {
   static const yellow = Color(0xFFFBBC04);
   static const grey = Color(0xFF5F6368);
   static const lightGrey = Color(0xFFE8EAED);
+}
+
+class RouteInfo {
+  final List<LatLng> points;
+  final double distanceKm;
+  final int durationSeconds;
+  final String durationText;
+  final double fuelLiters;
+  final double costPkr;
+
+  RouteInfo({
+    required this.points,
+    required this.distanceKm,
+    required this.durationSeconds,
+    required this.durationText,
+    required this.fuelLiters,
+    required this.costPkr,
+  });
 }
 
 void main() {
@@ -54,15 +73,32 @@ class _MapScreenState extends State<MapScreen> {
   final TextEditingController _sourceController = TextEditingController();
   final TextEditingController _destinationController = TextEditingController();
 
-  // -------- Point this at your FastAPI backend --------
-  // When you deploy the backend later, change this to your real URL.
+  // Point this at your FastAPI backend
   static const String _backendBase = 'http://127.0.0.1:8000';
+
+  List<RouteInfo> _routes = [];
+  int _selectedRouteIndex = 0;
+  String _selectedFuelType = 'petrol';
+  final double _vehicleEfficiency = 12.0;
 
   @override
   void dispose() {
     _sourceController.dispose();
     _destinationController.dispose();
     super.dispose();
+  }
+
+  void _clearRoute() {
+    setState(() {
+      _routes = [];
+      _selectedRouteIndex = 0;
+      _sourceLatLng = null;
+      _destinationLatLng = null;
+      _sourceName = '';
+      _destinationName = '';
+      _sourceController.clear();
+      _destinationController.clear();
+    });
   }
 
   void _openSearchSheet() {
@@ -75,28 +111,91 @@ class _MapScreenState extends State<MapScreen> {
           backendBase: _backendBase,
           sourceController: _sourceController,
           destinationController: _destinationController,
-          onRoutesReady: (source, dest, sourceName, destName) {
+          initialSource: _sourceLatLng,
+          initialDest: _destinationLatLng,
+          fuelType: _selectedFuelType,
+          vehicleEfficiency: _vehicleEfficiency,
+          onRoutesReady: (source, dest, sourceName, destName, routes) {
             setState(() {
               _sourceLatLng = source;
               _destinationLatLng = dest;
               _sourceName = sourceName;
               _destinationName = destName;
+              _routes = routes;
+              _selectedRouteIndex = 0;
             });
-            _mapController.move(
-              LatLng(
-                (source.latitude + dest.latitude) / 2,
-                (source.longitude + dest.longitude) / 2,
-              ),
-              10,
-            );
+
+            if (routes.isNotEmpty && routes[0].points.isNotEmpty) {
+              final points = routes[0].points;
+              _mapController.fitCamera(
+                CameraFit.bounds(
+                  bounds: LatLngBounds.fromPoints(points),
+                  padding: const EdgeInsets.only(
+                    top: 100,
+                    bottom: 240,
+                    left: 50,
+                    right: 50,
+                  ),
+                ),
+              );
+            } else {
+              _mapController.move(
+                LatLng(
+                  (source.latitude + dest.latitude) / 2,
+                  (source.longitude + dest.longitude) / 2,
+                ),
+                11,
+              );
+            }
           },
         );
       },
     );
   }
 
+  void _recalculateCostForFuelType(String newFuelType) async {
+    setState(() => _selectedFuelType = newFuelType);
+    if (_routes.isEmpty) return;
+
+    final updatedRoutes = <RouteInfo>[];
+    for (final r in _routes) {
+      try {
+        final res = await http.post(
+          Uri.parse('$_backendBase/fuel/trip-cost'),
+          headers: {'Content-Type': 'application/json'},
+          body: json.encode({
+            'distance_km': r.distanceKm,
+            'vehicle_efficiency_km_per_l': _vehicleEfficiency,
+            'fuel_type': newFuelType,
+          }),
+        );
+        if (res.statusCode == 200) {
+          final costData = json.decode(res.body);
+          updatedRoutes.add(RouteInfo(
+            points: r.points,
+            distanceKm: r.distanceKm,
+            durationSeconds: r.durationSeconds,
+            durationText: r.durationText,
+            fuelLiters: (costData['final_fuel_l'] as num).toDouble(),
+            costPkr: (costData['total_cost_pkr'] as num).toDouble(),
+          ));
+        } else {
+          updatedRoutes.add(r);
+        }
+      } catch (_) {
+        updatedRoutes.add(r);
+      }
+    }
+    if (mounted) {
+      setState(() => _routes = updatedRoutes);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final activeRoute =
+        _routes.isNotEmpty ? _routes[_selectedRouteIndex] : null;
+
     return Scaffold(
       body: Stack(
         children: [
@@ -113,14 +212,35 @@ class _MapScreenState extends State<MapScreen> {
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.fueloptima',
               ),
+              // Route Polylines
+              if (_routes.isNotEmpty)
+                PolylineLayer(
+                  polylines: [
+                    // Inactive alternative routes (grey)
+                    for (int i = 0; i < _routes.length; i++)
+                      if (i != _selectedRouteIndex)
+                        Polyline(
+                          points: _routes[i].points,
+                          strokeWidth: 4.5,
+                          color: Colors.grey.withValues(alpha: 0.7),
+                        ),
+                    // Active selected route (blue)
+                    Polyline(
+                      points: _routes[_selectedRouteIndex].points,
+                      strokeWidth: 6.0,
+                      color: GColors.blue,
+                    ),
+                  ],
+                ),
+              // Markers for Source & Destination
               if (_sourceLatLng != null || _destinationLatLng != null)
                 MarkerLayer(
                   markers: [
                     if (_sourceLatLng != null)
                       Marker(
                         point: _sourceLatLng!,
-                        width: 30,
-                        height: 30,
+                        width: 32,
+                        height: 32,
                         child: Container(
                           decoration: BoxDecoration(
                             color: GColors.green,
@@ -133,13 +253,18 @@ class _MapScreenState extends State<MapScreen> {
                               ),
                             ],
                           ),
+                          child: const Icon(
+                            Icons.trip_origin,
+                            color: Colors.white,
+                            size: 14,
+                          ),
                         ),
                       ),
                     if (_destinationLatLng != null)
                       Marker(
                         point: _destinationLatLng!,
-                        width: 30,
-                        height: 30,
+                        width: 32,
+                        height: 32,
                         child: Container(
                           decoration: BoxDecoration(
                             color: GColors.red,
@@ -152,18 +277,25 @@ class _MapScreenState extends State<MapScreen> {
                               ),
                             ],
                           ),
+                          child: const Icon(
+                            Icons.location_on,
+                            color: Colors.white,
+                            size: 18,
+                          ),
                         ),
                       ),
                   ],
                 ),
             ],
           ),
+
+          // Top Search Bar
           Positioned(
             top: MediaQuery.of(context).padding.top + 12,
             left: 12,
             right: 12,
             child: Material(
-              elevation: 3,
+              elevation: 4,
               borderRadius: BorderRadius.circular(28),
               color: Colors.white,
               child: InkWell(
@@ -182,31 +314,218 @@ class _MapScreenState extends State<MapScreen> {
                               ? 'Where do you want to go?'
                               : '$_sourceName → $_destinationName',
                           style: TextStyle(
-                            color:
-                                _sourceName.isEmpty ? GColors.grey : Colors.black,
-                            fontSize: 16,
+                            color: _sourceName.isEmpty
+                                ? GColors.grey
+                                : Colors.black87,
+                            fontSize: 15,
                             fontWeight: _sourceName.isEmpty
                                 ? FontWeight.w400
-                                : FontWeight.w500,
+                                : FontWeight.w600,
                           ),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
+                      if (_routes.isNotEmpty)
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 20),
+                          onPressed: _clearRoute,
+                        ),
                     ],
                   ),
                 ),
               ),
             ),
           ),
+
+          // Bottom Fuel Cost & Route Summary Card
+          if (activeRoute != null)
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 24,
+              child: Material(
+                elevation: 6,
+                borderRadius: BorderRadius.circular(20),
+                color: Colors.white,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Header with Route selector chips
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '${activeRoute.distanceKm.toStringAsFixed(1)} km  •  ${activeRoute.durationText}',
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.black87,
+                              ),
+                            ),
+                          ),
+                          // Fuel Type Toggle (Petrol / Diesel)
+                          SegmentedButton<String>(
+                            segments: const [
+                              ButtonSegment(
+                                value: 'petrol',
+                                label: Text('Petrol',
+                                    style: TextStyle(fontSize: 12)),
+                              ),
+                              ButtonSegment(
+                                value: 'diesel',
+                                label: Text('Diesel',
+                                    style: TextStyle(fontSize: 12)),
+                              ),
+                            ],
+                            selected: {_selectedFuelType},
+                            onSelectionChanged: (val) {
+                              _recalculateCostForFuelType(val.first);
+                            },
+                            style: const ButtonStyle(
+                              visualDensity: VisualDensity.compact,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Metrics Cards Row
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  vertical: 10, horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF1F3F4),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Est. Fuel',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: GColors.grey,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${activeRoute.fuelLiters.toStringAsFixed(2)} L',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                      color: GColors.blue,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  vertical: 10, horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE6F4EA),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Est. Cost',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: GColors.green,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Rs. ${activeRoute.costPkr.toStringAsFixed(0)}',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                      color: GColors.green,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+
+                      // Alternative Routes Switcher
+                      if (_routes.length > 1) ...[
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Alternative Routes:',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: GColors.grey,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 8,
+                          children: List.generate(_routes.length, (i) {
+                            final isSel = i == _selectedRouteIndex;
+                            return ChoiceChip(
+                              label: Text(
+                                'Route ${i + 1} (${_routes[i].distanceKm.toStringAsFixed(1)} km)',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: isSel ? Colors.white : Colors.black87,
+                                ),
+                              ),
+                              selected: isSel,
+                              selectedColor: GColors.blue,
+                              onSelected: (_) {
+                                setState(() => _selectedRouteIndex = i);
+                                final pts = _routes[i].points;
+                                if (pts.isNotEmpty) {
+                                  _mapController.fitCamera(
+                                    CameraFit.bounds(
+                                      bounds: LatLngBounds.fromPoints(pts),
+                                      padding: const EdgeInsets.only(
+                                        top: 100,
+                                        bottom: 240,
+                                        left: 50,
+                                        right: 50,
+                                      ),
+                                    ),
+                                  );
+                                }
+                              },
+                            );
+                          }),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _openSearchSheet,
-        backgroundColor: Colors.white,
-        elevation: 3,
-        shape: const CircleBorder(),
-        child: const Icon(Icons.directions, color: GColors.blue),
-      ),
+      floatingActionButton: _routes.isEmpty
+          ? FloatingActionButton(
+              onPressed: _openSearchSheet,
+              backgroundColor: Colors.white,
+              elevation: 3,
+              shape: const CircleBorder(),
+              child: const Icon(Icons.directions, color: GColors.blue),
+            )
+          : null,
     );
   }
 }
@@ -216,13 +535,26 @@ class _SearchSheet extends StatefulWidget {
   final String backendBase;
   final TextEditingController sourceController;
   final TextEditingController destinationController;
-  final Function(LatLng source, LatLng dest, String sourceName, String destName)
-      onRoutesReady;
+  final LatLng? initialSource;
+  final LatLng? initialDest;
+  final String fuelType;
+  final double vehicleEfficiency;
+  final Function(
+    LatLng source,
+    LatLng dest,
+    String sourceName,
+    String destName,
+    List<RouteInfo> routes,
+  ) onRoutesReady;
 
   const _SearchSheet({
     required this.backendBase,
     required this.sourceController,
     required this.destinationController,
+    this.initialSource,
+    this.initialDest,
+    required this.fuelType,
+    required this.vehicleEfficiency,
     required this.onRoutesReady,
   });
 
@@ -235,6 +567,7 @@ class _SearchSheetState extends State<_SearchSheet> {
   List<Map<String, dynamic>> _destinationSuggestions = [];
   bool _loadingSource = false;
   bool _loadingDest = false;
+  bool _isComputingRoute = false;
 
   LatLng? _sourceLatLng;
   LatLng? _destinationLatLng;
@@ -242,6 +575,8 @@ class _SearchSheetState extends State<_SearchSheet> {
   @override
   void initState() {
     super.initState();
+    _sourceLatLng = widget.initialSource;
+    _destinationLatLng = widget.initialDest;
     widget.sourceController.addListener(_onSourceChanged);
     widget.destinationController.addListener(_onDestChanged);
   }
@@ -262,7 +597,6 @@ class _SearchSheetState extends State<_SearchSheet> {
   }
 
   Future<void> _fetchSuggestions(String query, {required bool isSource}) async {
-    // 1. Try coordinate parse first (e.g. "24.86, 67.00")
     final coords = _tryParseCoordinates(query);
     if (coords != null) {
       if (isSource) {
@@ -276,7 +610,6 @@ class _SearchSheetState extends State<_SearchSheet> {
       return;
     }
 
-    // 2. Don't hit the API for very short inputs
     if (query.trim().length < 3) {
       if (isSource) {
         _sourceSuggestions = [];
@@ -293,7 +626,6 @@ class _SearchSheetState extends State<_SearchSheet> {
       setState(() => _loadingDest = true);
     }
 
-    // 3. Call OUR backend (which proxies Google)
     final url = Uri.parse('${widget.backendBase}/places/autocomplete');
 
     try {
@@ -308,8 +640,6 @@ class _SearchSheetState extends State<_SearchSheet> {
         final predictions =
             (data['suggestions'] as List?) ?? const <dynamic>[];
 
-        // New Places API response shape:
-        // { suggestions: [ { placePrediction: { placeId, text, structuredFormat } } ] }
         final results = predictions
             .map((p) {
               final pred = p['placePrediction'] as Map<String, dynamic>?;
@@ -337,7 +667,8 @@ class _SearchSheetState extends State<_SearchSheet> {
           });
         }
       } else {
-        debugPrint('Autocomplete failed: ${response.statusCode} ${response.body}');
+        debugPrint(
+            'Autocomplete failed: ${response.statusCode} ${response.body}');
         if (isSource) {
           setState(() => _loadingSource = false);
         } else {
@@ -378,9 +709,10 @@ class _SearchSheetState extends State<_SearchSheet> {
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        // New Places API returns { location: { latitude, longitude } }
         final loc = data['location'];
-        if (loc != null && loc['latitude'] != null && loc['longitude'] != null) {
+        if (loc != null &&
+            loc['latitude'] != null &&
+            loc['longitude'] != null) {
           return LatLng(
             (loc['latitude'] as num).toDouble(),
             (loc['longitude'] as num).toDouble(),
@@ -411,34 +743,157 @@ class _SearchSheetState extends State<_SearchSheet> {
     }
   }
 
+  int _parseDurationSeconds(dynamic d) {
+    if (d is int) return d;
+    if (d is String) {
+      final s = d.replaceAll('s', '').trim();
+      return int.tryParse(s) ?? 0;
+    }
+    return 0;
+  }
+
+  String _formatDuration(int seconds) {
+    final minutes = (seconds / 60).round();
+    if (minutes < 60) return '$minutes mins';
+    final hours = minutes ~/ 60;
+    final remMins = minutes % 60;
+    return '${hours}h ${remMins}m';
+  }
+
   Future<void> _handleGetRoutes() async {
-    // Ensure both endpoints are resolved
+    if (_isComputingRoute) return;
+
+    // 1. Resolve source coordinates
     if (_sourceLatLng == null) {
       final s = await _searchText(widget.sourceController.text);
       if (s == null) {
-        _showError('Source not found');
+        _showError('Starting point not found. Try selecting from suggestions.');
         return;
       }
       _sourceLatLng = s;
     }
 
+    // 2. Resolve destination coordinates
     if (_destinationLatLng == null) {
       final d = await _searchText(widget.destinationController.text);
       if (d == null) {
-        _showError('Destination not found');
+        _showError('Destination not found. Try selecting from suggestions.');
         return;
       }
       _destinationLatLng = d;
     }
 
-    widget.onRoutesReady(
-      _sourceLatLng!,
-      _destinationLatLng!,
-      widget.sourceController.text,
-      widget.destinationController.text,
-    );
+    setState(() => _isComputingRoute = true);
 
-    if (mounted) Navigator.pop(context);
+    try {
+      // 3. Request routes from backend
+      final computeUrl = Uri.parse('${widget.backendBase}/routes/compute');
+      final routeRes = await http.post(
+        computeUrl,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'source': {
+            'lat': _sourceLatLng!.latitude,
+            'lng': _sourceLatLng!.longitude,
+          },
+          'destination': {
+            'lat': _destinationLatLng!.latitude,
+            'lng': _destinationLatLng!.longitude,
+          },
+        }),
+      );
+
+      if (routeRes.statusCode != 200) {
+        _showError('Routes error: ${routeRes.statusCode} - ${routeRes.body}');
+        setState(() => _isComputingRoute = false);
+        return;
+      }
+
+      final routeData = json.decode(routeRes.body);
+      final rawRoutes = (routeData['routes'] as List?) ?? [];
+
+      if (rawRoutes.isEmpty) {
+        _showError('No driving routes found between these locations.');
+        setState(() => _isComputingRoute = false);
+        return;
+      }
+
+      // 4. Decode polylines and calculate fuel cost for each route
+      final List<RouteInfo> computedRoutes = [];
+
+      for (final r in rawRoutes) {
+        final encodedPolyline =
+            r['polyline']?['encodedPolyline'] as String? ?? '';
+        if (encodedPolyline.isEmpty) continue;
+
+        final decoded = PolylinePoints.decodePolyline(encodedPolyline);
+        final points =
+            decoded.map((p) => LatLng(p.latitude, p.longitude)).toList();
+
+        final distanceMeters = (r['distanceMeters'] as num?)?.toDouble() ?? 0.0;
+        final distanceKm = distanceMeters / 1000.0;
+
+        final durationSec = _parseDurationSeconds(r['duration']);
+        final durationText = _formatDuration(durationSec);
+
+        // Fetch fuel cost estimation
+        double fuelLiters = 0.0;
+        double costPkr = 0.0;
+
+        try {
+          final costRes = await http.post(
+            Uri.parse('${widget.backendBase}/fuel/trip-cost'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'distance_km': distanceKm,
+              'vehicle_efficiency_km_per_l': widget.vehicleEfficiency,
+              'fuel_type': widget.fuelType,
+            }),
+          );
+
+          if (costRes.statusCode == 200) {
+            final costData = json.decode(costRes.body);
+            fuelLiters = (costData['final_fuel_l'] as num).toDouble();
+            costPkr = (costData['total_cost_pkr'] as num).toDouble();
+          }
+        } catch (e) {
+          debugPrint('Cost calculation error: $e');
+        }
+
+        computedRoutes.add(RouteInfo(
+          points: points,
+          distanceKm: distanceKm,
+          durationSeconds: durationSec,
+          durationText: durationText,
+          fuelLiters: fuelLiters,
+          costPkr: costPkr,
+        ));
+      }
+
+      if (computedRoutes.isEmpty) {
+        _showError('Could not decode route geometry.');
+        setState(() => _isComputingRoute = false);
+        return;
+      }
+
+      widget.onRoutesReady(
+        _sourceLatLng!,
+        _destinationLatLng!,
+        widget.sourceController.text.isNotEmpty
+            ? widget.sourceController.text
+            : 'Start',
+        widget.destinationController.text.isNotEmpty
+            ? widget.destinationController.text
+            : 'Destination',
+        computedRoutes,
+      );
+
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      _showError('Failed to fetch routes: $e');
+    } finally {
+      if (mounted) setState(() => _isComputingRoute = false);
+    }
   }
 
   Future<LatLng?> _searchText(String query) async {
@@ -454,7 +909,6 @@ class _SearchSheetState extends State<_SearchSheet> {
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        // New Places API: { places: [ { location: { latitude, longitude }, ... } ] }
         final places = data['places'] as List?;
         if (places != null && places.isNotEmpty) {
           final loc = places[0]['location'];
@@ -475,148 +929,163 @@ class _SearchSheetState extends State<_SearchSheet> {
   void _showError(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
+      SnackBar(content: Text(message), backgroundColor: Colors.red.shade700),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.75,
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      child: Column(
-        children: [
-          Container(
-            margin: const EdgeInsets.only(top: 12, bottom: 8),
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: Colors.grey[400],
-              borderRadius: BorderRadius.circular(2),
+    // Wrapping in Material fixes the ListTile assertion error on Chrome/Web
+    return Material(
+      color: Colors.white,
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        height: MediaQuery.of(context).size.height * 0.75,
+        child: Column(
+          children: [
+            // Drag handle
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[400],
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            child: Row(
-              children: [
-                const Text(
-                  'Plan your trip',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w500,
-                    color: Colors.black87,
+            // Title
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Row(
+                children: [
+                  const Text(
+                    'Plan your trip',
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
+                    ),
                   ),
-                ),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.close, color: GColors.grey),
-                  onPressed: () => Navigator.pop(context),
-                ),
-              ],
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: GColors.grey),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Row(
-              children: [
-                Column(
-                  children: [
-                    const SizedBox(height: 14),
-                    Container(
-                      width: 12,
-                      height: 12,
-                      decoration: const BoxDecoration(
-                        color: GColors.green,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    Container(
-                      width: 2,
-                      height: 40,
-                      color: GColors.lightGrey,
-                    ),
-                    Container(
-                      width: 12,
-                      height: 12,
-                      decoration: BoxDecoration(
-                        color: GColors.red,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                  ],
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
+            // Input Fields
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                children: [
+                  Column(
                     children: [
+                      const SizedBox(height: 14),
                       Container(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF1F3F4),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: TextField(
-                          controller: widget.sourceController,
-                          decoration: const InputDecoration(
-                            hintText: 'Choose starting point',
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 14),
-                          ),
+                        width: 12,
+                        height: 12,
+                        decoration: const BoxDecoration(
+                          color: GColors.green,
+                          shape: BoxShape.circle,
                         ),
                       ),
-                      const SizedBox(height: 8),
                       Container(
+                        width: 2,
+                        height: 40,
+                        color: GColors.lightGrey,
+                      ),
+                      Container(
+                        width: 12,
+                        height: 12,
                         decoration: BoxDecoration(
-                          color: const Color(0xFFF1F3F4),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: TextField(
-                          controller: widget.destinationController,
-                          decoration: const InputDecoration(
-                            hintText: 'Choose destination',
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 14),
-                          ),
+                          color: GColors.red,
+                          borderRadius: BorderRadius.circular(2),
                         ),
                       ),
+                      const SizedBox(height: 14),
                     ],
                   ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          Expanded(
-            child: _buildSuggestionsArea(),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(20),
-            child: SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton(
-                onPressed: _handleGetRoutes,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: GColors.blue,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(24),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F3F4),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: TextField(
+                            controller: widget.sourceController,
+                            decoration: const InputDecoration(
+                              hintText: 'Choose starting point',
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 14),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F3F4),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: TextField(
+                            controller: widget.destinationController,
+                            decoration: const InputDecoration(
+                              hintText: 'Choose destination',
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 14),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                child: const Text(
-                  'Get Routes',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: _buildSuggestionsArea(),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: _isComputingRoute ? null : _handleGetRoutes,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: GColors.blue,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
+                  child: _isComputingRoute
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2.5,
+                          ),
+                        )
+                      : const Text(
+                          'Get Routes',
+                          style: TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -648,7 +1117,7 @@ class _SearchSheetState extends State<_SearchSheet> {
     return ListView.separated(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       itemCount: suggestions.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
+      separatorBuilder: (context, index) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final s = suggestions[index];
         return ListTile(
