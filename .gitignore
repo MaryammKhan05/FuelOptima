@@ -20,3 +20,10 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Ignore large datasets
+dataset/
+dataset_refined/
+
+# Ignore ML Model file
+backend/fuel_model.pkl

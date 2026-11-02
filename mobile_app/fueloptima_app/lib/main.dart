@@ -22,6 +22,8 @@ class RouteInfo {
   final String durationText;
   final double fuelLiters;
   final double costPkr;
+  final String priceSource; 
+  final String predictionMethod;
 
   RouteInfo({
     required this.points,
@@ -30,6 +32,8 @@ class RouteInfo {
     required this.durationText,
     required this.fuelLiters,
     required this.costPkr,
+    required this.priceSource,
+    required this.predictionMethod,
   });
 }
 
@@ -73,7 +77,6 @@ class _MapScreenState extends State<MapScreen> {
   final TextEditingController _sourceController = TextEditingController();
   final TextEditingController _destinationController = TextEditingController();
 
-  // Point this at your FastAPI backend
   static const String _backendBase = 'http://127.0.0.1:8000';
 
   List<RouteInfo> _routes = [];
@@ -107,47 +110,50 @@ class _MapScreenState extends State<MapScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) {
-        return _SearchSheet(
-          backendBase: _backendBase,
-          sourceController: _sourceController,
-          destinationController: _destinationController,
-          initialSource: _sourceLatLng,
-          initialDest: _destinationLatLng,
-          fuelType: _selectedFuelType,
-          vehicleEfficiency: _vehicleEfficiency,
-          onRoutesReady: (source, dest, sourceName, destName, routes) {
-            setState(() {
-              _sourceLatLng = source;
-              _destinationLatLng = dest;
-              _sourceName = sourceName;
-              _destinationName = destName;
-              _routes = routes;
-              _selectedRouteIndex = 0;
-            });
+        // RepaintBoundary makes the popup open much faster
+        return RepaintBoundary(
+          child: _SearchSheet(
+            backendBase: _backendBase,
+            sourceController: _sourceController,
+            destinationController: _destinationController,
+            initialSource: _sourceLatLng,
+            initialDest: _destinationLatLng,
+            fuelType: _selectedFuelType,
+            vehicleEfficiency: _vehicleEfficiency,
+            onRoutesReady: (source, dest, sourceName, destName, routes) {
+              setState(() {
+                _sourceLatLng = source;
+                _destinationLatLng = dest;
+                _sourceName = sourceName;
+                _destinationName = destName;
+                _routes = routes;
+                _selectedRouteIndex = 0;
+              });
 
-            if (routes.isNotEmpty && routes[0].points.isNotEmpty) {
-              final points = routes[0].points;
-              _mapController.fitCamera(
-                CameraFit.bounds(
-                  bounds: LatLngBounds.fromPoints(points),
-                  padding: const EdgeInsets.only(
-                    top: 100,
-                    bottom: 240,
-                    left: 50,
-                    right: 50,
+              if (routes.isNotEmpty && routes[0].points.isNotEmpty) {
+                final points = routes[0].points;
+                _mapController.fitCamera(
+                  CameraFit.bounds(
+                    bounds: LatLngBounds.fromPoints(points),
+                    padding: const EdgeInsets.only(
+                      top: 100,
+                      bottom: 240,
+                      left: 50,
+                      right: 50,
+                    ),
                   ),
-                ),
-              );
-            } else {
-              _mapController.move(
-                LatLng(
-                  (source.latitude + dest.latitude) / 2,
-                  (source.longitude + dest.longitude) / 2,
-                ),
-                11,
-              );
-            }
-          },
+                );
+              } else {
+                _mapController.move(
+                  LatLng(
+                    (source.latitude + dest.latitude) / 2,
+                    (source.longitude + dest.longitude) / 2,
+                  ),
+                  11,
+                );
+              }
+            },
+          ),
         );
       },
     );
@@ -165,8 +171,13 @@ class _MapScreenState extends State<MapScreen> {
           headers: {'Content-Type': 'application/json'},
           body: json.encode({
             'distance_km': r.distanceKm,
-            'vehicle_efficiency_km_per_l': _vehicleEfficiency,
             'fuel_type': newFuelType,
+            'vehicle_efficiency_km_per_l': _vehicleEfficiency,
+            'avg_speed_kmh': 50.0,
+            'avg_rpm': 2000.0,
+            'avg_engine_load': 30.0,
+            'avg_maf': 10.0,
+            'avg_fuel_trim': 0.0,
           }),
         );
         if (res.statusCode == 200) {
@@ -176,8 +187,10 @@ class _MapScreenState extends State<MapScreen> {
             distanceKm: r.distanceKm,
             durationSeconds: r.durationSeconds,
             durationText: r.durationText,
-            fuelLiters: (costData['final_fuel_l'] as num).toDouble(),
+            fuelLiters: (costData['predicted_fuel_l'] as num).toDouble(),
             costPkr: (costData['total_cost_pkr'] as num).toDouble(),
+            priceSource: costData['price_source'] as String? ?? 'Unknown',
+            predictionMethod: costData['prediction_method'] as String? ?? 'Static Formula',
           ));
         } else {
           updatedRoutes.add(r);
@@ -193,8 +206,7 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final activeRoute =
-        _routes.isNotEmpty ? _routes[_selectedRouteIndex] : null;
+    final activeRoute = _routes.isNotEmpty ? _routes[_selectedRouteIndex] : null;
 
     return Scaffold(
       body: Stack(
@@ -212,11 +224,9 @@ class _MapScreenState extends State<MapScreen> {
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.example.fueloptima',
               ),
-              // Route Polylines
               if (_routes.isNotEmpty)
                 PolylineLayer(
                   polylines: [
-                    // Inactive alternative routes (grey)
                     for (int i = 0; i < _routes.length; i++)
                       if (i != _selectedRouteIndex)
                         Polyline(
@@ -224,7 +234,6 @@ class _MapScreenState extends State<MapScreen> {
                           strokeWidth: 4.5,
                           color: Colors.grey.withValues(alpha: 0.7),
                         ),
-                    // Active selected route (blue)
                     Polyline(
                       points: _routes[_selectedRouteIndex].points,
                       strokeWidth: 6.0,
@@ -232,7 +241,6 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ],
                 ),
-              // Markers for Source & Destination
               if (_sourceLatLng != null || _destinationLatLng != null)
                 MarkerLayer(
                   markers: [
@@ -289,7 +297,6 @@ class _MapScreenState extends State<MapScreen> {
             ],
           ),
 
-          // Top Search Bar
           Positioned(
             top: MediaQuery.of(context).padding.top + 12,
             left: 12,
@@ -302,8 +309,7 @@ class _MapScreenState extends State<MapScreen> {
                 borderRadius: BorderRadius.circular(28),
                 onTap: _openSearchSheet,
                 child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                   child: Row(
                     children: [
                       const Icon(Icons.search, color: GColors.grey, size: 22),
@@ -314,13 +320,9 @@ class _MapScreenState extends State<MapScreen> {
                               ? 'Where do you want to go?'
                               : '$_sourceName → $_destinationName',
                           style: TextStyle(
-                            color: _sourceName.isEmpty
-                                ? GColors.grey
-                                : Colors.black87,
+                            color: _sourceName.isEmpty ? GColors.grey : Colors.black87,
                             fontSize: 15,
-                            fontWeight: _sourceName.isEmpty
-                                ? FontWeight.w400
-                                : FontWeight.w600,
+                            fontWeight: _sourceName.isEmpty ? FontWeight.w400 : FontWeight.w600,
                           ),
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -337,7 +339,6 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
 
-          // Bottom Fuel Cost & Route Summary Card
           if (activeRoute != null)
             Positioned(
               left: 12,
@@ -353,7 +354,6 @@ class _MapScreenState extends State<MapScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Header with Route selector chips
                       Row(
                         children: [
                           Expanded(
@@ -366,18 +366,15 @@ class _MapScreenState extends State<MapScreen> {
                               ),
                             ),
                           ),
-                          // Fuel Type Toggle (Petrol / Diesel)
                           SegmentedButton<String>(
                             segments: const [
                               ButtonSegment(
                                 value: 'petrol',
-                                label: Text('Petrol',
-                                    style: TextStyle(fontSize: 12)),
+                                label: Text('Petrol', style: TextStyle(fontSize: 12)),
                               ),
                               ButtonSegment(
                                 value: 'diesel',
-                                label: Text('Diesel',
-                                    style: TextStyle(fontSize: 12)),
+                                label: Text('Diesel', style: TextStyle(fontSize: 12)),
                               ),
                             ],
                             selected: {_selectedFuelType},
@@ -392,13 +389,11 @@ class _MapScreenState extends State<MapScreen> {
                       ),
                       const SizedBox(height: 12),
 
-                      // Metrics Cards Row
                       Row(
                         children: [
                           Expanded(
                             child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  vertical: 10, horizontal: 12),
+                              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                               decoration: BoxDecoration(
                                 color: const Color(0xFFF1F3F4),
                                 borderRadius: BorderRadius.circular(12),
@@ -407,7 +402,7 @@ class _MapScreenState extends State<MapScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   const Text(
-                                    'Est. Fuel',
+                                    'Predicted Fuel',
                                     style: TextStyle(
                                       fontSize: 12,
                                       color: GColors.grey,
@@ -415,13 +410,24 @@ class _MapScreenState extends State<MapScreen> {
                                     ),
                                   ),
                                   const SizedBox(height: 4),
-                                  Text(
-                                    '${activeRoute.fuelLiters.toStringAsFixed(2)} L',
-                                    style: const TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold,
-                                      color: GColors.blue,
-                                    ),
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.center,
+                                    children: [
+                                      Text(
+                                        '${activeRoute.fuelLiters.toStringAsFixed(2)} L',
+                                        style: const TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                          color: GColors.blue,
+                                        ),
+                                      ),
+                                      if (activeRoute.predictionMethod == "Machine Learning Model") ...[
+                                        const SizedBox(width: 6),
+                                        const Icon(Icons.psychology, size: 14, color: GColors.grey),
+                                        const SizedBox(width: 2),
+                                        const Text('AI', style: TextStyle(fontSize: 11, color: GColors.grey, fontWeight: FontWeight.w500)),
+                                      ]
+                                    ],
                                   ),
                                 ],
                               ),
@@ -430,8 +436,7 @@ class _MapScreenState extends State<MapScreen> {
                           const SizedBox(width: 12),
                           Expanded(
                             child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  vertical: 10, horizontal: 12),
+                              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                               decoration: BoxDecoration(
                                 color: const Color(0xFFE6F4EA),
                                 borderRadius: BorderRadius.circular(12),
@@ -456,6 +461,24 @@ class _MapScreenState extends State<MapScreen> {
                                       color: GColors.green,
                                     ),
                                   ),
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        activeRoute.priceSource.contains('Fallback') ? Icons.cloud_off : Icons.cloud_done,
+                                        size: 12,
+                                        color: GColors.green.withValues(alpha: 0.8),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        activeRoute.priceSource.contains('Fallback') ? 'Cached Price' : 'Live Price',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          color: GColors.green.withValues(alpha: 0.8),
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ],
                               ),
                             ),
@@ -463,7 +486,6 @@ class _MapScreenState extends State<MapScreen> {
                         ],
                       ),
 
-                      // Alternative Routes Switcher
                       if (_routes.length > 1) ...[
                         const SizedBox(height: 12),
                         const Text(
@@ -637,8 +659,7 @@ class _SearchSheetState extends State<_SearchSheet> {
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        final predictions =
-            (data['suggestions'] as List?) ?? const <dynamic>[];
+        final predictions = (data['suggestions'] as List?) ?? const <dynamic>[];
 
         final results = predictions
             .map((p) {
@@ -667,8 +688,6 @@ class _SearchSheetState extends State<_SearchSheet> {
           });
         }
       } else {
-        debugPrint(
-            'Autocomplete failed: ${response.statusCode} ${response.body}');
         if (isSource) {
           setState(() => _loadingSource = false);
         } else {
@@ -676,7 +695,6 @@ class _SearchSheetState extends State<_SearchSheet> {
         }
       }
     } catch (e) {
-      debugPrint('Autocomplete error: $e');
       if (isSource) {
         setState(() => _loadingSource = false);
       } else {
@@ -710,16 +728,12 @@ class _SearchSheetState extends State<_SearchSheet> {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final loc = data['location'];
-        if (loc != null &&
-            loc['latitude'] != null &&
-            loc['longitude'] != null) {
+        if (loc != null && loc['latitude'] != null && loc['longitude'] != null) {
           return LatLng(
             (loc['latitude'] as num).toDouble(),
             (loc['longitude'] as num).toDouble(),
           );
         }
-      } else {
-        debugPrint('Details failed: ${response.statusCode} ${response.body}');
       }
     } catch (e) {
       debugPrint('Place details error: $e');
@@ -727,8 +741,7 @@ class _SearchSheetState extends State<_SearchSheet> {
     return null;
   }
 
-  void _onSuggestionTapped(Map<String, dynamic> suggestion,
-      {required bool isSource}) async {
+  void _onSuggestionTapped(Map<String, dynamic> suggestion, {required bool isSource}) async {
     final latLng = await _getPlaceDetails(suggestion['place_id']);
     if (latLng == null) return;
 
@@ -763,7 +776,6 @@ class _SearchSheetState extends State<_SearchSheet> {
   Future<void> _handleGetRoutes() async {
     if (_isComputingRoute) return;
 
-    // 1. Resolve source coordinates
     if (_sourceLatLng == null) {
       final s = await _searchText(widget.sourceController.text);
       if (s == null) {
@@ -773,7 +785,6 @@ class _SearchSheetState extends State<_SearchSheet> {
       _sourceLatLng = s;
     }
 
-    // 2. Resolve destination coordinates
     if (_destinationLatLng == null) {
       final d = await _searchText(widget.destinationController.text);
       if (d == null) {
@@ -786,7 +797,6 @@ class _SearchSheetState extends State<_SearchSheet> {
     setState(() => _isComputingRoute = true);
 
     try {
-      // 3. Request routes from backend
       final computeUrl = Uri.parse('${widget.backendBase}/routes/compute');
       final routeRes = await http.post(
         computeUrl,
@@ -818,17 +828,14 @@ class _SearchSheetState extends State<_SearchSheet> {
         return;
       }
 
-      // 4. Decode polylines and calculate fuel cost for each route
       final List<RouteInfo> computedRoutes = [];
 
       for (final r in rawRoutes) {
-        final encodedPolyline =
-            r['polyline']?['encodedPolyline'] as String? ?? '';
+        final encodedPolyline = r['polyline']?['encodedPolyline'] as String? ?? '';
         if (encodedPolyline.isEmpty) continue;
 
         final decoded = PolylinePoints.decodePolyline(encodedPolyline);
-        final points =
-            decoded.map((p) => LatLng(p.latitude, p.longitude)).toList();
+        final points = decoded.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
         final distanceMeters = (r['distanceMeters'] as num?)?.toDouble() ?? 0.0;
         final distanceKm = distanceMeters / 1000.0;
@@ -836,9 +843,10 @@ class _SearchSheetState extends State<_SearchSheet> {
         final durationSec = _parseDurationSeconds(r['duration']);
         final durationText = _formatDuration(durationSec);
 
-        // Fetch fuel cost estimation
         double fuelLiters = 0.0;
         double costPkr = 0.0;
+        String priceSource = 'Unknown';
+        String predictionMethod = 'Static Formula';
 
         try {
           final costRes = await http.post(
@@ -846,15 +854,22 @@ class _SearchSheetState extends State<_SearchSheet> {
             headers: {'Content-Type': 'application/json'},
             body: json.encode({
               'distance_km': distanceKm,
-              'vehicle_efficiency_km_per_l': widget.vehicleEfficiency,
               'fuel_type': widget.fuelType,
+              'vehicle_efficiency_km_per_l': widget.vehicleEfficiency,
+              'avg_speed_kmh': 50.0,
+              'avg_rpm': 2000.0,
+              'avg_engine_load': 30.0,
+              'avg_maf': 10.0,
+              'avg_fuel_trim': 0.0,
             }),
           );
 
           if (costRes.statusCode == 200) {
             final costData = json.decode(costRes.body);
-            fuelLiters = (costData['final_fuel_l'] as num).toDouble();
+            fuelLiters = (costData['predicted_fuel_l'] as num).toDouble();
             costPkr = (costData['total_cost_pkr'] as num).toDouble();
+            priceSource = costData['price_source'] as String? ?? 'Unknown';
+            predictionMethod = costData['prediction_method'] as String? ?? 'Static Formula';
           }
         } catch (e) {
           debugPrint('Cost calculation error: $e');
@@ -867,6 +882,8 @@ class _SearchSheetState extends State<_SearchSheet> {
           durationText: durationText,
           fuelLiters: fuelLiters,
           costPkr: costPkr,
+          priceSource: priceSource,
+          predictionMethod: predictionMethod,
         ));
       }
 
@@ -879,12 +896,8 @@ class _SearchSheetState extends State<_SearchSheet> {
       widget.onRoutesReady(
         _sourceLatLng!,
         _destinationLatLng!,
-        widget.sourceController.text.isNotEmpty
-            ? widget.sourceController.text
-            : 'Start',
-        widget.destinationController.text.isNotEmpty
-            ? widget.destinationController.text
-            : 'Destination',
+        widget.sourceController.text.isNotEmpty ? widget.sourceController.text : 'Start',
+        widget.destinationController.text.isNotEmpty ? widget.destinationController.text : 'Destination',
         computedRoutes,
       );
 
@@ -935,7 +948,6 @@ class _SearchSheetState extends State<_SearchSheet> {
 
   @override
   Widget build(BuildContext context) {
-    // Wrapping in Material fixes the ListTile assertion error on Chrome/Web
     return Material(
       color: Colors.white,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
@@ -944,7 +956,6 @@ class _SearchSheetState extends State<_SearchSheet> {
         height: MediaQuery.of(context).size.height * 0.75,
         child: Column(
           children: [
-            // Drag handle
             Container(
               margin: const EdgeInsets.only(top: 12, bottom: 8),
               width: 40,
@@ -954,7 +965,6 @@ class _SearchSheetState extends State<_SearchSheet> {
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
-            // Title
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               child: Row(
@@ -975,7 +985,6 @@ class _SearchSheetState extends State<_SearchSheet> {
                 ],
               ),
             ),
-            // Input Fields
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Row(
@@ -1021,8 +1030,7 @@ class _SearchSheetState extends State<_SearchSheet> {
                             decoration: const InputDecoration(
                               hintText: 'Choose starting point',
                               border: InputBorder.none,
-                              contentPadding: EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 14),
+                              contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                             ),
                           ),
                         ),
@@ -1037,8 +1045,7 @@ class _SearchSheetState extends State<_SearchSheet> {
                             decoration: const InputDecoration(
                               hintText: 'Choose destination',
                               border: InputBorder.none,
-                              contentPadding: EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 14),
+                              contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                             ),
                           ),
                         ),
@@ -1078,8 +1085,7 @@ class _SearchSheetState extends State<_SearchSheet> {
                         )
                       : const Text(
                           'Get Routes',
-                          style: TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.w600),
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                         ),
                 ),
               ),
@@ -1109,8 +1115,7 @@ class _SearchSheetState extends State<_SearchSheet> {
     );
   }
 
-  Widget _buildSuggestionList(List<Map<String, dynamic>> suggestions,
-      {required bool isSource}) {
+  Widget _buildSuggestionList(List<Map<String, dynamic>> suggestions, {required bool isSource}) {
     if (suggestions.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
